@@ -54,3 +54,7 @@ By default, the API will be available at `http://127.0.0.1:8000`.
 - **CORS Configuration**: If you change the port or domain of your frontend application, remember to update the `origins` list in the `CORSMiddleware` configuration inside `main.py`.
 - **Database**: This project uses a local `404_ai.db` SQLite database file, which is automatically created when the server first runs. This file is excluded from Git via `.gitignore`.
 - **Password Hashing**: Passwords are securely hashed using `bcrypt`. Due to a known limitation of the `bcrypt` algorithm, passwords are truncated to 72 bytes before hashing.
+
+## To run
+
+USE---> uvicorn main:app --reload 
