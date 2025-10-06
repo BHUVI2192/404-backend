@@ -13,40 +13,34 @@ from sqlalchemy.ext.declarative import declarative_base
 from passlib.context import CryptContext
 from dotenv import load_dotenv
 from httpx_oauth.clients.google import GoogleOAuth2
-
-# AI Model Import
 import google.generativeai as genai
 
 # Load Environment Variables
 load_dotenv()
 
-# --- Configuration ---
 DATABASE_URL = "sqlite:///./404_ai.db"
 SECRET_KEY = "0d727fb751e6f3741b72b679f80a8a40d720c7d9088a9819f0d6ca374df00961"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# --- AI Model Configuration (Free Tier) ---
+# AI Model Configuration (Gemini Pro)
 try:
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     if gemini_api_key:
         genai.configure(api_key=gemini_api_key)
-        # --- THE FINAL FIX: Using the 'latest' tag for automatic versioning ---
         GEMINI_MODEL = genai.GenerativeModel('gemini-pro-latest')
     else:
         GEMINI_MODEL = None
-        logging.warning("GEMINI_API_KEY not found. AI features will be limited.")
+        logging.warning("GEMINI_API_KEY not found.")
 except Exception as e:
     GEMINI_MODEL = None
     logging.error(f"AI Model configuration failed: {e}")
 
-# --- Google OAuth2 Config ---
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URL = "http://127.0.0.1:8000/auth/google/callback"
 google_client = GoogleOAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET)
 
-# --- Database Setup ---
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -59,12 +53,10 @@ class User(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# --- Pydantic Models ---
 class ChatRequest(BaseModel): prompt: str
 class Token(BaseModel): access_token: str; token_type: str
 class UserCreate(BaseModel): email: str; password: str
 
-# --- Security & Dependencies ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 
@@ -98,20 +90,20 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     if user is None: raise credentials_exception
     return user
 
-# --- FastAPI App & CORS ---
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:8080"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- AI Orchestration Logic ---
+# ----------- ROOT ENDPOINT -----------
+@app.get("/")
+def root():
+    return {"status": "running", "message": "404 AI backend API is alive!"}
+
 def route_prompt_to_model(prompt: str):
     prompt_lower = prompt.lower()
     if any(keyword in prompt_lower for keyword in ["image", "draw", "picture", "visual"]):
         return "image_generation_placeholder"
     return "gemini_pro"
 
-# --- API Endpoints ---
-
-# Chat Endpoint
 @app.post("/api/v1/chat/route")
 async def handle_chat_request(chat_request: ChatRequest, current_user: User = Depends(get_current_user)):
     model_choice = route_prompt_to_model(chat_request.prompt)
@@ -129,7 +121,6 @@ async def handle_chat_request(chat_request: ChatRequest, current_user: User = De
         raise HTTPException(status_code=500, detail="AI model error.")
     return {"response": response_text, "model_used": model_choice}
 
-# Standard Auth Endpoints
 @app.post("/api/v1/register", response_model=Token)
 def register_user(user: UserCreate, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == user.email).first()
@@ -148,7 +139,6 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
     access_token = create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
-# Google OAuth Endpoints
 @app.get("/auth/google/login")
 async def google_login():
     authorization_url = await google_client.get_authorization_url(
