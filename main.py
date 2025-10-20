@@ -19,7 +19,7 @@ import google.generativeai as genai
 
 # --- ENV and CORE DB ---
 load_dotenv()
-DATABASE_URL = "postgresql://404-ai:404%409988@localhost:5432/the-404-ai"
+DATABASE_URL = "postgresql://404-ai:Bhuvan%409988@localhost:5432/the-404-ai"
 SECRET_KEY = os.getenv("SECRET_KEY", "set-a-real-prod-secret-here")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
@@ -79,6 +79,8 @@ Base.metadata.create_all(bind=engine)
 # --- Pydantic Schemas ---
 class ChatRequest(BaseModel):
     prompt: str
+    incognito: Optional[bool] = False
+    session_id: Optional[int] = None  # new field
 
 class Token(BaseModel):
     access_token: str
@@ -184,12 +186,6 @@ async def handle_chat_request(
     if not GEMINI_MODEL:
         raise HTTPException(status_code=503, detail="AI Service is not configured.")
 
-    # Create new session or you can modify logic to reuse session based on your frontend
-    session = SessionModel(user_id=current_user.id, start_time=datetime.utcnow(), title="New Chat")
-    db.add(session)
-    db.commit()
-    db.refresh(session)
-
     try:
         if model_choice == "image_generation_placeholder":
             response_text = f"Image generation for '{chat_request.prompt}' is coming soon!"
@@ -200,18 +196,38 @@ async def handle_chat_request(
         logging.error(f"Error calling AI model {model_choice}: {e}")
         raise HTTPException(status_code=500, detail="AI model error.")
 
-    memory_entry = MemoryEntry(
-        user_id=current_user.id,
-        session_id=session.id,
-        prompt=chat_request.prompt,
-        response=response_text,
-        timestamp=datetime.utcnow(),
-    )
-    db.add(memory_entry)
-    session.last_updated = datetime.utcnow()
-    db.commit()
-
-    return {"response": response_text, "model_used": model_choice}
+    session = None
+    if not chat_request.incognito:
+        if chat_request.session_id:
+            # Continue an existing thread if valid session_id is provided
+            session = db.query(SessionModel).filter_by(
+                id=chat_request.session_id, user_id=current_user.id
+            ).first()
+            if not session:
+                # If session_id is invalid, create new session to avoid silent routing errors
+                session = SessionModel(user_id=current_user.id, start_time=datetime.utcnow(), title="New Chat")
+                db.add(session)
+                db.commit()
+                db.refresh(session)
+        else:
+            # Always create a new session for every new chat
+            session = SessionModel(user_id=current_user.id, start_time=datetime.utcnow(), title="New Chat")
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+        memory_entry = MemoryEntry(
+            user_id=current_user.id,
+            session_id=session.id,
+            prompt=chat_request.prompt,
+            response=response_text,
+            timestamp=datetime.utcnow(),
+        )
+        db.add(memory_entry)
+        if session.title == "New Chat":
+            session.title = chat_request.prompt.strip()[:50]
+        session.last_updated = datetime.utcnow()
+        db.commit()
+    return {"response": response_text, "model_used": model_choice, "session_id": session.id if not chat_request.incognito else None}
 
 @app.get("/api/v1/memory/", response_model=List[MemoryEntryOut])
 def get_user_memory(
